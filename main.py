@@ -1,8 +1,9 @@
-import numpy as np
 import math
-from tqdm import tqdm
+import os
+import xml.etree.ElementTree as ET
+import numpy as np
 from osgeo import gdal, gdal_array
-from PIL import Image
+from tqdm import tqdm
 
 '''
 对多通道的tif图像进行分割,
@@ -11,13 +12,12 @@ from PIL import Image
 子图命名规范:原图名称_000001开始递增
 '''
 
-'''
-读取tif文件,并将其转换为ndarray格式
-返回:数组数据,通道数,高度,宽度
-'''
-
 
 def read_tif(path):
+    """
+    读取tif文件,并将其转换为ndarray格式
+    返回:数组数据,通道数,高度,宽度
+    """
     try:
         dataset = gdal.Open(path, gdal.GA_Update)
         if dataset is None:
@@ -38,13 +38,11 @@ def read_tif(path):
     return arr_dataset, channels, height, width
 
 
-'''
-写入tif文件,
-参数:导出子图的路径,子图的数组,保存文件的类型,通道数,拆分的图像宽度,拆分的图像高度
-'''
-
-
 def write_tif(path, dataset, data_type, channels, width, height):
+    """
+    写入tif文件,
+    参数:导出子图的路径,子图的数组,保存文件的类型,通道数,拆分的图像宽度,拆分的图像高度
+    """
     driver = gdal.GetDriverByName("GTiff")
     # 创建tif文件
     output_dataset = driver.Create(path, width, height, channels,
@@ -61,6 +59,36 @@ def write_tif(path, dataset, data_type, channels, width, height):
     output_dataset = None
 
 
+def read_voc_xml(xml_file_path):
+    """
+    读取VOC格式的xml文件，提取标签和包围框信息。
+
+    参数：
+    xml_file_path：xml文件的路径。
+
+    返回值：
+    labels：包含所有标签的列表。
+    bboxes：包含所有包围框坐标的列表，每个包围框是一个四元组(xmin, ymin, xmax, ymax)。
+    """
+    tree = ET.parse(xml_file_path)
+    root = tree.getroot()
+
+    labels = []
+    bboxes = []
+
+    for obj in root.findall('object'):
+        label = obj.find('name').text
+        bbox = obj.find('bndbox')
+        xmin = int(bbox.find('xmin').text)
+        ymin = int(bbox.find('ymin').text)
+        xmax = int(bbox.find('xmax').text)
+        ymax = int(bbox.find('ymax').text)
+        bboxes.append((xmin, ymin, xmax, ymax))
+        labels.append(label)
+
+    return labels, bboxes
+
+
 def tif_segmentation(read_file_root_path, read_file_name, tif_write_path='./output/segmented_tif/',
                      xml_write_path='./output/segmented_xml/',
                      mark_png_write_path='./output/markedPNG/', split_width=640, split_height=640):
@@ -70,6 +98,13 @@ def tif_segmentation(read_file_root_path, read_file_name, tif_write_path='./outp
     row = math.ceil(height / split_height)
     col = math.ceil(width / split_width)
 
+    # 获取未切割的文件名（去除扩展名部分）
+    base_file_name = read_file_name[:-4]
+
+    # 创建与未切割文件同名的文件夹（如果不存在）
+    output_folder = os.path.join(tif_write_path, base_file_name)
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
     # 保存切割后的子图并显示进度
     total_images = row * col
     with tqdm(total=total_images) as pbar:  # 使用tqdm的ProgressBar创建进度条对象并设置总进度
@@ -95,8 +130,8 @@ def tif_segmentation(read_file_root_path, read_file_name, tif_write_path='./outp
 
                 # 生成子图文件路径,从000001开始
                 file_number = r * col + c + 1
-                sub_file_name = read_file_name[:-4] + f"_{file_number:06d}.tif"
-                output_file = tif_write_path + sub_file_name
+                sub_file_name = f"{base_file_name}_{file_number:06d}.tif"
+                output_file = os.path.join(output_folder, sub_file_name)
                 # 写入tif文件
                 write_tif(output_file, sub_image, arr_dataset.dtype, channels, split_width, split_height)
                 # 更新进度条，表示处理了一个图像
