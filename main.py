@@ -1,6 +1,5 @@
 import numpy as np
 import math
-import time
 from tqdm import tqdm
 from osgeo import gdal, gdal_array
 from PIL import Image
@@ -54,43 +53,40 @@ def tif_segmentation(read_file_root_path, read_file_name, tif_write_path='./outp
                 start_y = r * split_height
                 end_y = start_y + split_height
 
-                # 计算实际子图的宽度和高度，如果超过原图尺寸则进行修正
+                # 计算实际能切出来的子图的宽度和高度，如果超过原图尺寸则进行修正
                 sub_width = split_width if end_x <= width else width - start_x
                 sub_height = split_height if end_y <= height else height - start_y
                 '''
                 为了保证图像的相对位置不改变,切割子图时,不改变原图尺寸,
                 将切割后不能满足指定长宽的子图补全,且应该只在图像的右边或者下面补上白边
                 '''
-                # 创建临时子图
-                sub_image_temp = np.zeros((num_channels, split_height, split_width),
-                                          dtype=arr_dataset.dtype)    # 初始化为白色
-                sub_image_temp[:num_channels, :sub_height, :sub_width] = arr_dataset[:, start_y:end_y, start_x:end_x]
+                # 创建子图,CHW!!
+                sub_image = np.zeros((num_channels, split_height, split_width), dtype=arr_dataset.dtype)  # 初始化为纯黑色的子图背景
+                sub_image[:num_channels, :sub_height, :sub_width] = arr_dataset[:, start_y:start_y+sub_height, start_x:start_x + sub_width]  # 求交集
+                # sub_image[:num_channels, :sub_height, :sub_width] = arr_dataset[:, 3000:3000+sub_height, 3000:3000 + sub_width] #测试用例
 
-                # 创建子图
-                sub_image = np.zeros((num_channels, split_height, split_width), dtype=arr_dataset.dtype) # 初始化为白色
-                sub_image[:num_channels, :sub_height, :sub_width] = sub_image_temp[:, :sub_height, :sub_width]
-
-                # 生成文件名
+                # 生成文件名,从000001开始
                 file_number = r * col + c + 1
-                file_name = read_file_name[:-4] + f"_{file_number:06d}.tif"
+                sub_file_name = read_file_name[:-4] + f"_{file_number:06d}.tif"
 
                 # 创建子图的输出文件
-                output_file = tif_write_path + file_name
+                output_file = tif_write_path + sub_file_name
                 driver = gdal.GetDriverByName("GTiff")
                 output_dataset = driver.Create(output_file, split_width, split_height, num_channels,
                                                gdal_array.GDALTypeCodeToNumericTypeCode(arr_dataset.dtype))
 
                 # 将子图数据写入TIF文件
-                if num_channels == 1:
-                    output_dataset.GetRasterBand(1).WriteArray(sub_image[:, :, 0])
-                else:
-                    for channel in range(num_channels):
-                        output_dataset.GetRasterBand(channel + 1).WriteArray(sub_image[:, :, channel])
-
+                '''
+                注意写入顺序,不同的图像可能需要更改,此次处理的图像尺寸格式为C,H,W,顺序错误图像会无法正确显示
+                问题:似乎切割出来的图像色相有一定的偏差
+                代办:自动识别图像的尺寸写入格式
+                '''
+                for channel in range(num_channels):
+                    output_dataset.GetRasterBand(channel + 1).WriteArray(sub_image[channel, :, :])
                 # 关闭TIF文件
                 output_dataset = None
-
-                pbar.update(1)  # 更新进度条，表示处理了一个图像
+                # 更新进度条，表示处理了一个图像
+                pbar.update(1)
     # 关闭原始TIF文件
     dataset = None
 
