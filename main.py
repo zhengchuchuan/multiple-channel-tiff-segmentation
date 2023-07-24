@@ -1,6 +1,8 @@
 import math
 import os
 import xml.etree.ElementTree as ET
+from xml.dom import minidom
+
 import numpy as np
 from osgeo import gdal, gdal_array
 from tqdm import tqdm
@@ -89,61 +91,122 @@ def read_voc_xml(xml_file_path):
     return labels, bboxes
 
 
-def tif_segmentation(read_file_root_path, read_file_name, tif_write_path='./output/segmented_tif/',
+def write_voc_xml(xml_file_path, labels, bboxes):
+    """
+    将标签和包围框信息保存为VOC格式的xml文件。
+
+    参数：
+    xml_file_path：xml文件的保存路径。
+    labels：包含所有标签的列表。
+    bboxes：包含所有包围框坐标的列表，每个包围框是一个四元组(xmin, ymin, xmax, ymax)。
+    """
+    # 创建XML根元素
+    root = ET.Element("annotation")
+
+    for label, bbox in zip(labels, bboxes):
+        obj = ET.SubElement(root, "object")
+        name = ET.SubElement(obj, "name")
+        name.text = label
+        bndbox = ET.SubElement(obj, "bndbox")
+        xmin, ymin, xmax, ymax = bbox
+        ET.SubElement(bndbox, "xmin").text = str(xmin)
+        ET.SubElement(bndbox, "ymin").text = str(ymin)
+        ET.SubElement(bndbox, "xmax").text = str(xmax)
+        ET.SubElement(bndbox, "ymax").text = str(ymax)
+
+    # 将XML文件格式化
+    xml_string = ET.tostring(root, encoding="utf-8")
+    dom = minidom.parseString(xml_string)
+    pretty_xml_string = dom.toprettyxml(indent="    ")
+
+    # 将格式化后的XML字符串保存为文件
+    with open(xml_file_path, "w", encoding="utf-8") as f:
+        f.write(pretty_xml_string)
+
+
+def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif/',
                      xml_write_path='./output/segmented_xml/',
                      mark_png_write_path='./output/markedPNG/', split_width=640, split_height=640):
-    # 读取TIF文件
-    arr_dataset, channels, height, width = read_tif(read_file_root_path + read_file_name)
-    # 获取行列切片的数量
-    row = math.ceil(height / split_height)
-    col = math.ceil(width / split_width)
+    tif_files = [f for f in os.listdir(read_file_root_path) if f.endswith('.tif')]
 
-    # 获取未切割的文件名（去除扩展名部分）
-    base_file_name = read_file_name[:-4]
+    with tqdm(total=len(tif_files), desc="Processing Images") as pbar_folder:
+        for tif_file in tif_files:
+            # 读取TIF文件
+            arr_dataset, channels, height, width = read_tif(read_file_root_path + tif_file)
+            # 获取行列切片的数量
+            row = math.ceil(height / split_height)
+            col = math.ceil(width / split_width)
 
-    # 创建与未切割文件同名的文件夹（如果不存在）
-    output_folder = os.path.join(tif_write_path, base_file_name)
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    # 保存切割后的子图并显示进度
-    total_images = row * col
-    with tqdm(total=total_images) as pbar:  # 使用tqdm的ProgressBar创建进度条对象并设置总进度
-        for r in range(row):
-            for c in range(col):
-                # 计算切割区域
-                start_x = c * split_width
-                end_x = start_x + split_width
-                start_y = r * split_height
-                end_y = start_y + split_height
+            # 获取未切割的文件名（去除扩展名部分）
+            base_file_name = tif_file[:-4]
 
-                # 计算实际能切出来的子图的宽度和高度，如果超过原图尺寸则进行修正
-                sub_width = split_width if end_x <= width else width - start_x
-                sub_height = split_height if end_y <= height else height - start_y
-                '''
-                为了保证图像的相对位置不改变,切割子图时,不改变原图尺寸,
-                将切割后不能满足指定长宽的子图补全,且应该只在图像的右边或者下面补上白边
-                '''
-                # 创建子图,CHW!!
-                sub_image = np.zeros((channels, split_height, split_width), dtype=arr_dataset.dtype)  # 初始化为纯黑色的子图背景
-                sub_image[:channels, :sub_height, :sub_width] = arr_dataset[:, start_y:start_y + sub_height, start_x:start_x + sub_width]  # 求交集
-                # sub_image[:channels, :sub_height, :sub_width] = arr_dataset[:, 3000:3000+sub_height, 3000:3000 + sub_width] #测试用例
+            # 创建与未切割文件同名的文件夹（如果不存在）
+            output_folder = os.path.join(tif_write_path, base_file_name)
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
 
-                # 生成子图文件路径,从000001开始
-                file_number = r * col + c + 1
-                sub_file_name = f"{base_file_name}_{file_number:06d}.tif"
-                output_file = os.path.join(output_folder, sub_file_name)
-                # 写入tif文件
-                write_tif(output_file, sub_image, arr_dataset.dtype, channels, split_width, split_height)
-                # 更新进度条，表示处理了一个图像
-                pbar.update(1)
+            # 读取对应的XML文件
+            xml_file_path = os.path.join(read_file_root_path, base_file_name + ".xml")
+            labels, bboxes = read_voc_xml(xml_file_path)
+
+            # 保存切割后的子图并显示进度
+            total_images = row * col
+            with tqdm(total=total_images, position=0) as pbar:  # 使用tqdm的ProgressBar创建进度条对象并设置总进度
+                for r in range(row):
+                    for c in range(col):
+                        # 计算切割区域
+                        start_x = c * split_width
+                        end_x = start_x + split_width
+                        start_y = r * split_height
+                        end_y = start_y + split_height
+
+                        # 计算实际能切出来的子图的宽度和高度，如果超过原图尺寸则进行修正
+                        sub_width = split_width if end_x <= width else width - start_x
+                        sub_height = split_height if end_y <= height else height - start_y
+                        '''
+                        为了保证图像的相对位置不改变,切割子图时,不改变原图尺寸,
+                        将切割后不能满足指定长宽的子图补全,且应该只在图像的右边或者下面补上白边
+                        '''
+                        # 创建子图,CHW!!
+                        sub_image = np.zeros((channels, split_height, split_width), dtype=arr_dataset.dtype)  # 初始化为纯黑色的子图背景
+                        sub_image[:channels, :sub_height, :sub_width] = arr_dataset[:, start_y:start_y + sub_height,
+                                                                        start_x:start_x + sub_width]  # 求交集
+                        # sub_image[:channels, :sub_height, :sub_width] = arr_dataset[:, 3000:3000+sub_height, 3000:3000 + sub_width] #测试用例
+                        """
+                        保存后的xml文件内容不对,大概率切割算法有错,坐标出现负值
+                        """
+                        # 更新XML文件中的包围框坐标（相对于子图的坐标）
+                        for i in range(len(bboxes)):
+                            xmin, ymin, xmax, ymax = bboxes[i]
+                            bboxes[i] = (max(0, xmin - start_x), max(0, ymin - start_y),
+                                         min(sub_width, xmax - start_x), min(sub_height, ymax - start_y))
+
+                        # 生成子图文件路径,从000001开始
+                        file_number = r * col + c + 1
+                        sub_file_name = f"{base_file_name}_{file_number:06d}.tif"
+                        output_file = os.path.join(output_folder, sub_file_name)
+                        # 写入tif文件
+                        write_tif(output_file, sub_image, arr_dataset.dtype, channels, split_width, split_height)
+                        # 保存更新后的XML文件
+
+                        sub_xml_file_path = os.path.join(xml_write_path, f"{base_file_name}_{file_number:06d}.xml")
+                        write_voc_xml(sub_xml_file_path, labels, bboxes)
+                        # 更新每张图像的进度条，表示处理了一个图像
+
+                        # pbar.set_postfix(file=tif_file, sub_image=f"{r * col + c + 1}/{total_images}")
+                        pbar.update(1)
+            # 更新文件夹剩余图像数量的进度条
+            pbar_folder.update(1)
 
 
 if __name__ == '__main__':
     # 指定TIF文件路径
     root_path = "data/"
-    file_name = 'SET011.tif'
     tif_write_path = './output/segmented_tif/'
     xml_write_path = './output/segmented_xml/'
     mark_png_write_path = './output/markedPNG/'
-    tif_segmentation(read_file_root_path=root_path, read_file_name=file_name, tif_write_path=tif_write_path,
-                     xml_write_path=xml_write_path, mark_png_write_path=mark_png_write_path)
+    split_width = 640
+    split_height = 640
+    tif_segmentation(read_file_root_path=root_path, tif_write_path=tif_write_path,
+                     xml_write_path=xml_write_path, mark_png_write_path=mark_png_write_path,
+                     split_width=split_width, split_height=split_height)

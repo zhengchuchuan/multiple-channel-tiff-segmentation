@@ -3,6 +3,9 @@
 .git
 # IntelliJ project files
 .idea
+*.tif
 *.iml
+*.xml
+*.png
 out
 gen
