@@ -207,7 +207,18 @@ def draw_bboxes_on_image(png_image, labels, bboxes):
 
 def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif/',
                      xml_write_path='./output/segmented_xml/',
-                     mark_png_write_path='./output/markedPNG/', split_width=640, split_height=640):
+                     mark_png_write_path='./output/markedPNG/', split_width=640, split_height=640,black_threshold = 1):
+    """
+
+    :param read_file_root_path:
+    :param tif_write_path:
+    :param xml_write_path:
+    :param mark_png_write_path:
+    :param split_width:
+    :param split_height:
+    :param black_threshold:
+    :return:
+    """
     tif_files = [f for f in os.listdir(read_file_root_path) if f.endswith('.tif')]
 
     with tqdm(total=len(tif_files), desc="Processing Images") as pbar_folder:
@@ -248,7 +259,7 @@ def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif
                         # 创建子图,CHW!!
                         sub_image = np.zeros((channels, split_height, split_width), dtype=arr_dataset.dtype)  # 初始化为纯黑色的子图背景
                         sub_image[:, :sub_height, :sub_width] = arr_dataset[:, start_y:start_y + sub_height,
-                                                                        start_x:start_x + sub_width]  # 求交集
+                                                                start_x:start_x + sub_width]  # 求交集
 
                         # 新建一个列表，用于存储与子图有重叠区域的标签和包围框
                         sub_labels = []
@@ -267,39 +278,34 @@ def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif
                                 sub_labels.append(labels[i])
                                 sub_bboxes.append((relative_xmin, relative_ymin, relative_xmax, relative_ymax))
 
-                        # 生成子图文件路径,从000001开始
-                        # 创建与未切割文件同名的文件夹（如果不存在）
+                        # 计算5个通道全为黑色的像素个数
+                        black_pixel_num = len(sub_image[sub_image == 0])
+                        if len(sub_labels) != 0 or black_pixel_num/sub_image.size < black_threshold:
+                            # 生成子图文件路径,从000001开始
+                            # 创建与未切割文件同名的文件夹（如果不存在）
+                            tif_output_folder_path = os.path.join(tif_write_path, base_tif_file_name)
+                            if not os.path.exists(tif_output_folder_path):
+                                os.makedirs(tif_output_folder_path)
 
-                        tif_output_folder_path = os.path.join(tif_write_path, base_tif_file_name)
-                        if not os.path.exists(tif_output_folder_path):
-                            os.makedirs(tif_output_folder_path)
+                            sub_tif_file_name = f"{base_tif_file_name}_{file_number:06d}.tif"
+                            sub_tif_output_path = os.path.join(tif_output_folder_path, sub_tif_file_name)
+                            # 写入tif文件
+                            write_tif(sub_tif_output_path, sub_image, arr_dataset.dtype, channels, split_width, split_height)
 
-                        sub_tif_file_name = f"{base_tif_file_name}_{file_number:06d}.tif"
-                        sub_tif_output_path = os.path.join(tif_output_folder_path, sub_tif_file_name)
-                        # 写入tif文件
-                        write_tif(sub_tif_output_path, sub_image, arr_dataset.dtype, channels, split_width, split_height)
+                            # tif转png格式
+                            sub_png_arr = convert_tif_array_to_png(sub_image)
+                            # 将数组转换为PIL图像 CHW->WHC
+                            sub_png = Image.fromarray(sub_png_arr.transpose(1, 2, 0))
+                            sub_png = draw_bboxes_on_image(sub_png, sub_labels, sub_bboxes)
+                            # 保存png图像
+                            png_output_folder_path = os.path.join(mark_png_write_path, base_tif_file_name)
+                            if not os.path.exists(png_output_folder_path):
+                                os.makedirs(png_output_folder_path)
+                            sub_png_file_name = f"{base_tif_file_name}_{file_number:06d}.png"
+                            sub_png_output_path = os.path.join(png_output_folder_path, sub_png_file_name)
+                            sub_png.save(sub_png_output_path)
 
-                        # tif转png格式
-                        sub_png_arr = convert_tif_array_to_png(sub_image)
-                        # 将数组转换为PIL图像 CHW->WHC
-                        sub_png = Image.fromarray(sub_png_arr.transpose(1, 2, 0))
-                        # 测试标注数据是否分割正确,图像上画框
-                        # draw_frame = ImageDraw.Draw(sub_png)
-                        # # sub中存储的坐标为相对子图左上角的位置
-                        # for bbox in sub_bboxes:
-                        #     xmin, ymin, xmax, ymax = bbox
-                        #     draw_frame.rectangle([xmin, ymin, xmax, ymax], outline=(255, 0, 0), width=3)
-                        sub_png = draw_bboxes_on_image(sub_png, sub_labels, sub_bboxes)
-                        # 保存png图像
-                        png_output_folder_path = os.path.join(mark_png_write_path, base_tif_file_name)
-                        if not os.path.exists(png_output_folder_path):
-                            os.makedirs(png_output_folder_path)
-                        sub_png_file_name = f"{base_tif_file_name}_{file_number:06d}.png"
-                        sub_png_output_path = os.path.join(png_output_folder_path, sub_png_file_name)
-                        sub_png.save(sub_png_output_path)
-
-                        # 保存更新后的XML文件
-                        if len(sub_labels) != 0:
+                            # 保存更新后的XML文件
                             xml_output_folder_path = os.path.join(xml_write_path, base_tif_file_name)
                             if not os.path.exists(xml_output_folder_path):
                                 os.makedirs(xml_output_folder_path)
@@ -322,4 +328,4 @@ if __name__ == '__main__':
     split_height = 640
     tif_segmentation(read_file_root_path=root_path, tif_write_path=tif_write_path,
                      xml_write_path=xml_write_path, mark_png_write_path=mark_png_write_path,
-                     split_width=split_width, split_height=split_height)
+                     split_width=split_width, split_height=split_height,black_threshold = 0.1)
