@@ -7,6 +7,7 @@ import numpy as np
 from osgeo import gdal, gdal_array
 from tqdm import tqdm
 
+base_size = 640
 '''
 对多通道的tif图像进行分割,
 默认尺寸:640*640,边缘添加白边补整,
@@ -41,6 +42,23 @@ def normalize_array(array):
     return normalized_array.astype(np.uint8)
 
 
+def calculate_split_box(row, col, step, width, height):
+    start_x = col * step
+    end_x = start_x + width
+    start_y = row * step
+    end_y = start_y + height
+    return start_x, start_y, end_x, end_y
+
+
+def generate_file_save_path(file_write_path, file_name, file_number, file_type):
+    output_folder_path = os.path.join(file_write_path, file_name)
+    if not os.path.exists(output_folder_path):
+        os.makedirs(output_folder_path)
+    file_name = f"{file_name}_{file_number}{file_type}"
+    file_output_path = os.path.join(output_folder_path, file_name)
+    return file_output_path
+
+
 def read_tif(path):
     """
     读取tif文件,并将其转换为ndarray格式
@@ -69,15 +87,24 @@ def read_tif(path):
     return arr_dataset, channels, height, width, geo_trans, geo_proj
 
 
-def write_tif(path, dataset, data_type, channels, width, height):
+def write_tif(tif_write_path, base_tif_file_name, file_number, dataset, channels, width, height):
     """
     写入tif文件,
     参数:导出子图的路径,子图的数组,保存文件的类型,通道数,拆分的图像宽度,拆分的图像高度
     """
+    # 生成子图文件路径,从000001开始
+    # 创建与未切割文件同名的文件夹（如果不存在）
+    tif_output_folder_path = os.path.join(tif_write_path, base_tif_file_name)
+    if not os.path.exists(tif_output_folder_path):
+        os.makedirs(tif_output_folder_path)
+    # 文件名
+    sub_tif_file_name = f"{base_tif_file_name}_{file_number}.tif"
+    # 保存路径
+    sub_tif_output_path = os.path.join(tif_output_folder_path, sub_tif_file_name)
     driver = gdal.GetDriverByName("GTiff")
     # 创建tif文件
-    output_dataset = driver.Create(path, width, height, channels,
-                                   gdal_array.GDALTypeCodeToNumericTypeCode(data_type))
+    output_dataset = driver.Create(sub_tif_output_path, width, height, channels,
+                                   gdal_array.GDALTypeCodeToNumericTypeCode(dataset.dtype))
     # 将子图数据写入TIF文件
     '''
     注意写入顺序,不同的图像可能需要更改,此次处理的图像尺寸格式为C,H,W,顺序错误图像会无法正确显示
@@ -120,7 +147,7 @@ def read_voc_xml(xml_file_path):
     return labels, bboxes
 
 
-def write_voc_xml(xml_file_path, labels, bboxes):
+def write_voc_xml(xml_write_path, base_tif_file_name, file_number, labels, bboxes, image_width, image_height, image_depth):
     """
     将标签和包围框信息保存为VOC格式的xml文件。
 
@@ -128,14 +155,40 @@ def write_voc_xml(xml_file_path, labels, bboxes):
     xml_file_path：xml文件的保存路径。
     labels：包含所有标签的列表。
     bboxes：包含所有包围框坐标的列表，每个包围框是一个四元组(xmin, ymin, xmax, ymax)。
+    image_width: 图像宽度
+    image_height: 图像高度
+    image_depth: 图像通道数
     """
+    sub_xml_output_path = generate_file_save_path(xml_write_path, base_tif_file_name, file_number, '.xml')
+    # xml_output_folder_path = os.path.join(xml_write_path, base_tif_file_name)
+    # if not os.path.exists(xml_output_folder_path):
+    #     os.makedirs(xml_output_folder_path)
+    # sub_xml_output_path = os.path.join(xml_output_folder_path, f"{base_tif_file_name}_{file_number:06d}.xml")
     # 创建XML根元素
     root = ET.Element("annotation")
+    # 添加图像信息
+    folder = ET.SubElement(root, "folder")
+    folder.text = "VOC2007"  # 替换为您的图像所在的文件夹名称
+    filename = ET.SubElement(root, "filename")
+    filename.text = f"{base_tif_file_name}_{file_number}.png"  # 替换为您的图像文件名和扩展名
+    size = ET.SubElement(root, "size")
+    width = ET.SubElement(size, "width")
+    width.text = str(image_width)
+    height = ET.SubElement(size, "height")
+    height.text = str(image_height)
+    depth = ET.SubElement(size, "depth")
+    depth.text = str(image_depth)
 
     for label, bbox in zip(labels, bboxes):
         obj = ET.SubElement(root, "object")
         name = ET.SubElement(obj, "name")
         name.text = label
+        pose = ET.SubElement(obj, "pose")
+        pose.text = "Unspecified"
+        truncated = ET.SubElement(obj, "truncated")
+        truncated.text = "0"
+        difficult = ET.SubElement(obj, "difficult")
+        difficult.text = "0"
         bndbox = ET.SubElement(obj, "bndbox")
         xmin, ymin, xmax, ymax = bbox
         ET.SubElement(bndbox, "xmin").text = str(xmin)
@@ -149,7 +202,7 @@ def write_voc_xml(xml_file_path, labels, bboxes):
     pretty_xml_string = dom.toprettyxml(indent="    ")
 
     # 将格式化后的XML字符串保存为文件
-    with open(xml_file_path, "w", encoding="utf-8") as f:
+    with open(sub_xml_output_path, "w", encoding="utf-8") as f:
         f.write(pretty_xml_string)
 
 
@@ -166,6 +219,37 @@ def convert_tif_array_to_png(tif_array):
     # 变换为RGB通道
     png_array[[0, 2], :, :] = png_array[[2, 0], :, :]
     return png_array
+
+
+def write_png(file_write_path, file_name, file_number, file_type, img, labels, bboxes):
+    # tif转png格式
+    sub_png_arr = convert_tif_array_to_png(img)
+    # 将数组转换为PIL图像 CHW->WHC
+    sub_png = Image.fromarray(sub_png_arr.transpose(1, 2, 0))
+    sub_png = draw_bboxes_on_image(sub_png, labels, bboxes)
+    # 保存png图像
+    sub_png_output_path = generate_file_save_path(file_write_path=file_write_path, file_name=file_name,
+                                                  file_number=file_number, file_type=file_type)
+    sub_png.save(sub_png_output_path)
+
+
+def update_sub_xml(width, height, labels, bboxes, start_x, start_y):
+    sub_labels = []
+    sub_bboxes = []
+    # 更新XML文件中的包围框坐标（相对于子图的坐标）
+    for i in range(len(bboxes)):
+        xmin, ymin, xmax, ymax = bboxes[i]
+        # 计算包围框相对于子图的坐标
+        relative_xmin = max(0, xmin - start_x)
+        relative_ymin = max(0, ymin - start_y)
+        relative_xmax = min(width, xmax - start_x)
+        relative_ymax = min(height, ymax - start_y)
+        # 检查是否有重叠区域
+        if relative_xmin < width and relative_ymin < height and relative_xmax > 0 and relative_ymax > 0:
+            # 将有重叠区域的标签和包围框添加到列表中
+            sub_labels.append(labels[i])
+            sub_bboxes.append((relative_xmin, relative_ymin, relative_xmax, relative_ymax))
+    return sub_labels, sub_bboxes
 
 
 def draw_bboxes_on_image(png_image, labels, bboxes):
@@ -205,11 +289,14 @@ def draw_bboxes_on_image(png_image, labels, bboxes):
     return png_image
 
 
+# def save_files(base_tif_file_name,tif_write_path,xml_write_path,mark_png_write_path):
+
 def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif/',
                      xml_write_path='./output/segmented_xml/',
-                     mark_png_write_path='./output/markedPNG/', split_width=640, split_height=640,black_threshold = 1):
+                     mark_png_write_path='./output/markedPNG/', split_width=640, split_height=640, step=0, black_threshold=1):
     """
 
+    :param step:
     :param read_file_root_path:
     :param tif_write_path:
     :param xml_write_path:
@@ -219,8 +306,9 @@ def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif
     :param black_threshold:
     :return:
     """
+    # 获取数据存储的文件下所有的tif文件
     tif_files = [f for f in os.listdir(read_file_root_path) if f.endswith('.tif')]
-
+    # 文件处理个数进度条
     with tqdm(total=len(tif_files), desc="Processing Images") as pbar_folder:
         for tif_file in tif_files:
             # 读取TIF文件
@@ -236,82 +324,76 @@ def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif
             xml_file_path = os.path.join(read_file_root_path, base_tif_file_name + ".xml")
             labels, bboxes = read_voc_xml(xml_file_path)
 
-            # 保存切割后的子图并显示进度
+            # 切割子图,显示子图处理进度
             total_images = row * col
             with tqdm(total=total_images, position=0) as pbar:  # 使用tqdm的ProgressBar创建进度条对象并设置总进度
                 for r in range(row):
                     for c in range(col):
                         # 子图编号
-                        file_number = r * col + c + 1
+                        file_number = str(r * col + c + 1).zfill(6)
                         # 计算切割区域
-                        start_x = c * split_width
-                        end_x = start_x + split_width
-                        start_y = r * split_height
-                        end_y = start_y + split_height
+                        start_x, start_y, end_x, end_y = calculate_split_box(r, c, base_size, split_width, split_height)
 
-                        # 计算实际能切出来的子图的宽度和高度，如果超过原图尺寸则进行修正
-                        sub_width = split_width if end_x <= width else width - start_x
-                        sub_height = split_height if end_y <= height else height - start_y
+                        # 计算实际能切出来的子图的宽度和高度,后续可能会在切出的图像再进行移位切分
+                        temp_width = split_width if end_x <= width else width - start_x
+                        temp_height = split_height if end_y <= height else height - start_y
                         '''
                         为了保证图像的相对位置不改变,切割子图时,不改变原图尺寸,
                         将切割后不能满足指定长宽的子图补全,且应该只在图像的右边或者下面补上黑边
                         '''
                         # 创建子图,CHW!!
-                        sub_image = np.zeros((channels, split_height, split_width), dtype=arr_dataset.dtype)  # 初始化为纯黑色的子图背景
-                        sub_image[:, :sub_height, :sub_width] = arr_dataset[:, start_y:start_y + sub_height,
-                                                                start_x:start_x + sub_width]  # 求交集
-
-                        # 新建一个列表，用于存储与子图有重叠区域的标签和包围框
-                        sub_labels = []
-                        sub_bboxes = []
+                        temp_image = np.zeros((channels, split_height, split_width), dtype=arr_dataset.dtype)  # 初始化为纯黑色的子图背景
+                        temp_image[:, :temp_height, :temp_width] = arr_dataset[:, start_y:start_y + temp_height,
+                                                                   start_x:start_x + temp_width]  # 图像覆盖在黑色背景上
                         # 更新XML文件中的包围框坐标（相对于子图的坐标）
-                        for i in range(len(bboxes)):
-                            xmin, ymin, xmax, ymax = bboxes[i]
-                            # 计算包围框相对于子图的坐标
-                            relative_xmin = max(0, xmin - start_x)
-                            relative_ymin = max(0, ymin - start_y)
-                            relative_xmax = min(sub_width, xmax - start_x)
-                            relative_ymax = min(sub_height, ymax - start_y)
-                            # 检查是否有重叠区域
-                            if relative_xmin < sub_width and relative_ymin < sub_height and relative_xmax > 0 and relative_ymax > 0:
-                                # 将有重叠区域的标签和包围框添加到列表中
-                                sub_labels.append(labels[i])
-                                sub_bboxes.append((relative_xmin, relative_ymin, relative_xmax, relative_ymax))
-
+                        temp_labels, temp_bboxes = update_sub_xml(temp_width, temp_height, labels, bboxes, start_x, start_y)
                         # 计算5个通道全为黑色的像素个数
-                        black_pixel_num = len(sub_image[sub_image == 0])
-                        if len(sub_labels) != 0 or black_pixel_num/sub_image.size < black_threshold:
-                            # 生成子图文件路径,从000001开始
-                            # 创建与未切割文件同名的文件夹（如果不存在）
-                            tif_output_folder_path = os.path.join(tif_write_path, base_tif_file_name)
-                            if not os.path.exists(tif_output_folder_path):
-                                os.makedirs(tif_output_folder_path)
+                        # 此处有点一刀切,直接对初始切割出来的子图进行了筛选,如果对子图再按步长进行切割时进行筛选,则会保留一部分边缘的无标签图片
+                        black_pixel_num = len(temp_image[temp_image == 0])
+                        if len(temp_labels) != 0 or (black_pixel_num / temp_image.size) < black_threshold:
+                            if step == 0:
+                                sub_image = temp_image
+                                sub_width = temp_width
+                                sub_height = temp_height
+                                sub_labels = temp_labels
+                                sub_bboxes = temp_bboxes
+                                # 写入tif文件
+                                write_tif(tif_write_path, base_tif_file_name, file_number, sub_image, channels, sub_width, sub_height)
+                                # 保存png
+                                write_png(mark_png_write_path, base_tif_file_name, file_number, '.png', sub_image, sub_labels, sub_bboxes)
+                                # 如果拆分出的子图有标签,保存更新后的XML文件
+                                if len(sub_labels) != 0:
+                                    write_voc_xml(xml_write_path, base_tif_file_name, file_number, sub_labels, sub_bboxes, sub_width, sub_height, 3)
+                            # 指定了子图切割的步长
+                            elif step > 0:
+                                # 暂时不处理不能整除的情况!!!!!!!
+                                sub_row = math.ceil((temp_height - base_size) / step)
+                                sub_col = math.ceil((temp_width - base_size) / step)
+                                if sub_col==0: sub_col+=1
+                                sub_width = base_size
+                                sub_height = base_size
 
-                            sub_tif_file_name = f"{base_tif_file_name}_{file_number:06d}.tif"
-                            sub_tif_output_path = os.path.join(tif_output_folder_path, sub_tif_file_name)
-                            # 写入tif文件
-                            write_tif(sub_tif_output_path, sub_image, arr_dataset.dtype, channels, split_width, split_height)
+                                for sub_r in range(sub_row):
+                                    for sub_c in range(sub_col):
 
-                            # tif转png格式
-                            sub_png_arr = convert_tif_array_to_png(sub_image)
-                            # 将数组转换为PIL图像 CHW->WHC
-                            sub_png = Image.fromarray(sub_png_arr.transpose(1, 2, 0))
-                            sub_png = draw_bboxes_on_image(sub_png, sub_labels, sub_bboxes)
-                            # 保存png图像
-                            png_output_folder_path = os.path.join(mark_png_write_path, base_tif_file_name)
-                            if not os.path.exists(png_output_folder_path):
-                                os.makedirs(png_output_folder_path)
-                            sub_png_file_name = f"{base_tif_file_name}_{file_number:06d}.png"
-                            sub_png_output_path = os.path.join(png_output_folder_path, sub_png_file_name)
-                            sub_png.save(sub_png_output_path)
-
-                            # 保存更新后的XML文件
-                            xml_output_folder_path = os.path.join(xml_write_path, base_tif_file_name)
-                            if not os.path.exists(xml_output_folder_path):
-                                os.makedirs(xml_output_folder_path)
-                            sub_xml_output_path = os.path.join(xml_output_folder_path, f"{base_tif_file_name}_{file_number:06d}.xml")
-                            write_voc_xml(sub_xml_output_path, sub_labels, sub_bboxes)
-
+                                        sub_file_number = str(sub_r * sub_col + sub_c + 1).zfill(3)
+                                        sub_start_x, sub_start_y, sub_end_x, sub_end_y = calculate_split_box(sub_r, sub_c, step, sub_width, sub_height)
+                                        sub_labels, sub_bboxes = update_sub_xml(sub_width, sub_height, temp_labels, temp_bboxes, sub_start_x ,sub_start_y)
+                                        sub_image = temp_image[:, sub_start_y:sub_start_y + sub_height,
+                                                    sub_start_x:sub_start_x + sub_width]
+                                        sub_file_number = file_number + '_' + sub_file_number
+                                        sub_black_pixel_num = len(sub_image[sub_image == 0])
+                                        if len(sub_labels) != 0 or (sub_black_pixel_num / sub_image.size) < black_threshold:
+                                            # 写入tif文件
+                                            write_tif(tif_write_path, base_tif_file_name, sub_file_number,
+                                                      sub_image, channels, sub_width, sub_height)
+                                            # 保存png
+                                            write_png(mark_png_write_path, base_tif_file_name, sub_file_number, '.png',
+                                                      sub_image, sub_labels, sub_bboxes)
+                                            # 如果拆分出的子图有标签,保存更新后的XML文件
+                                            if len(sub_labels) != 0:
+                                                write_voc_xml(xml_write_path, base_tif_file_name, sub_file_number,
+                                                              sub_labels, sub_bboxes, sub_width, sub_height, 3)
                         # 更新每张图像的进度条，表示处理了一个图像
                         pbar.update(1)
             # 更新文件夹剩余图像数量的进度条
@@ -325,7 +407,8 @@ if __name__ == '__main__':
     xml_write_path = './output/segmented_xml/'
     mark_png_write_path = './output/markedPNG/'
     split_width = 640
-    split_height = 640
+    split_height = 1280
     tif_segmentation(read_file_root_path=root_path, tif_write_path=tif_write_path,
                      xml_write_path=xml_write_path, mark_png_write_path=mark_png_write_path,
-                     split_width=split_width, split_height=split_height,black_threshold = 0.1)
+                     split_width=split_width, split_height=split_height, step=32, black_threshold=0.1)
+    print("程序结束")
