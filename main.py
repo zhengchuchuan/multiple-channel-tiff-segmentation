@@ -367,9 +367,9 @@ def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif
                             # 指定了子图切割的步长
                             elif step > 0:
                                 # 暂时不处理不能整除的情况!!!!!!!
-                                sub_row = math.ceil((temp_height - base_size) / step)
-                                sub_col = math.ceil((temp_width - base_size) / step)
-                                if sub_col==0: sub_col+=1
+                                sub_row = math.ceil((temp_height - base_size) / step) + 1
+                                sub_col = math.ceil((temp_width - base_size) / step) + 1
+                                # 此处的循环次数似乎有问题
                                 sub_width = base_size
                                 sub_height = base_size
 
@@ -377,8 +377,10 @@ def tif_segmentation(read_file_root_path, tif_write_path='./output/segmented_tif
                                     for sub_c in range(sub_col):
 
                                         sub_file_number = str(sub_r * sub_col + sub_c + 1).zfill(3)
-                                        sub_start_x, sub_start_y, sub_end_x, sub_end_y = calculate_split_box(sub_r, sub_c, step, sub_width, sub_height)
-                                        sub_labels, sub_bboxes = update_sub_xml(sub_width, sub_height, temp_labels, temp_bboxes, sub_start_x ,sub_start_y)
+                                        sub_start_x, sub_start_y, sub_end_x, sub_end_y = calculate_split_box(sub_r, sub_c, step, sub_width,
+                                                                                                             sub_height)
+                                        sub_labels, sub_bboxes = update_sub_xml(sub_width, sub_height, temp_labels, temp_bboxes, sub_start_x,
+                                                                                sub_start_y)
                                         sub_image = temp_image[:, sub_start_y:sub_start_y + sub_height,
                                                     sub_start_x:sub_start_x + sub_width]
                                         sub_file_number = file_number + '_' + sub_file_number
